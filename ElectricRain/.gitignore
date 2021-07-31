@@ -4,3 +4,4 @@
 .vscode/launch.json
 .vscode/ipch
 include/WifiCredentials.h
+platformio-device-monitor-*.log
