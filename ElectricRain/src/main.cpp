@@ -41,10 +41,10 @@ NTPClient timeClient(wifiUdpClient);
 uint16_t sensor1, sensor2, sensor3, sensor4;
 bool pump1, pump2, pump3, pump4;
 
-void goToDeepSleep(unsigned long sleepMinutes)
+void goToDeepSleep(uint64_t sleepMinutes)
 {
   String status = "SLEEPING for ";
-  status += sleepMinutes;
+  status += (uint) sleepMinutes;
   status += " minutes";
 
   Serial.println("Send update.");
