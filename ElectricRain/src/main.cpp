@@ -11,14 +11,33 @@
 #define SENSOR3 35
 #define SENSOR4 34
 
+#define PUMP_THRESHOLD 2900
+
 #define PUMP1 23
 #define PUMP2 22
 #define PUMP3 21
 #define PUMP4 19
 
+#define DEEP_SLEEP_MINUTES 5
+#define DEEP_SLEEP_DELAY_MS 1000
+
+#define PUMPING_DELAY_MS 2000
+
 #define WIFI_TIMEOUT_MS 20000
 
 WiFiClient wifiClient;
+
+void goToDeepSleep()
+{
+  Serial.print("Going to sleep.");
+  delay(DEEP_SLEEP_DELAY_MS);
+
+  Serial.println(" bye");
+  delay(DEEP_SLEEP_DELAY_MS); // trying to let the wifi transmit data..
+
+  esp_sleep_enable_timer_wakeup(DEEP_SLEEP_MINUTES * 60 * 1000 * 1000);
+  esp_deep_sleep_start();
+}
 
 void connectToWifi()
 {
@@ -37,13 +56,88 @@ void connectToWifi()
   if (WiFi.status() != WL_CONNECTED)
   {
     Serial.println(" ! failed !");
-    sleep(60);
+    goToDeepSleep();
   }
   else
   {
     Serial.print(" connected ");
     Serial.println(WiFi.localIP());
   }
+}
+
+bool processSensor(uint8_t field, uint8_t readPin, uint8_t writePin)
+{
+  float value = analogRead(readPin);
+
+  Serial.printf("%d (%d) = %f ", field, readPin, value);
+  ThingSpeak.setField(field, value);
+
+  if (value < PUMP_THRESHOLD)
+  {
+    digitalWrite(writePin, HIGH);
+    return false;
+  }
+  else
+  {
+    digitalWrite(writePin, LOW);
+    return true;
+  }
+}
+
+bool measureAndPump(bool sendUpdate)
+{
+  String status = "";
+  bool result = false;
+
+  if (processSensor(1, SENSOR1, PUMP1))
+  {
+    result = true;
+    status += "PUMPING 1";
+  }
+  if (processSensor(2, SENSOR2, PUMP2))
+  {
+    if (result)
+    {
+      status += ", ";
+    }
+    result = true;
+    status += "PUMPING 2";
+  }
+  if (processSensor(3, SENSOR3, PUMP3))
+  {
+    if (result)
+    {
+      status += ", ";
+    }
+    result = true;
+    status += "PUMPING 3";
+  }
+  if (processSensor(4, SENSOR4, PUMP4))
+  {
+    if (result)
+    {
+      status += ", ";
+    }
+    result = true;
+    status += "PUMPING 4";
+  }
+
+  if (!result)
+  {
+    status = "-- OFF --";
+  }
+
+  Serial.println(status);
+  ThingSpeak.setStatus(status);
+
+  ThingSpeak.setField(8, WiFi.RSSI());
+
+  if (sendUpdate)
+  {
+    Serial.println("Send update.");
+    ThingSpeak.writeFields(TP_CHANNEL, TP_WRITE_API_KEY);
+  }
+  return result;
 }
 
 void setup()
@@ -67,71 +161,26 @@ void setup()
   digitalWrite(PUMP2, HIGH);
   digitalWrite(PUMP3, HIGH);
   digitalWrite(PUMP4, HIGH);
-}
 
-int processSensor(uint8_t field, uint8_t readPin, uint8_t writePin)
-{
-  float value = analogRead(readPin);
-
-  Serial.printf("%d (%d) = %f ", field, readPin, value);
-  ThingSpeak.setField(field, value);
-
-  if (value > 3000)
+  if (!measureAndPump(true))
   {
-    digitalWrite(writePin, HIGH);
-    return 0;
-  }
-  else
-  {
-    digitalWrite(writePin, LOW);
-    return 1;
+    goToDeepSleep();
   }
 }
 
+int count = 0;
 void loop()
 {
-  String status = "";
+  delay(PUMPING_DELAY_MS);
 
-  if (processSensor(1, SENSOR1, PUMP1))
+  count++;
+  if (!measureAndPump(count % 10 == 0))
   {
-    status += "PUMPING 1";
-  }
-  if (processSensor(2, SENSOR2, PUMP2))
-  {
-    if (status.length() > 0)
+    Serial.println("Pumping done? re-check.");
+    delay(PUMPING_DELAY_MS);
+    if (!measureAndPump(true))
     {
-      status += ", ";
+      goToDeepSleep();
     }
-    status += "PUMPING 2";
   }
-  if (processSensor(3, SENSOR3, PUMP3))
-  {
-    if (status.length() > 0)
-    {
-      status += ", ";
-    }
-    status += "PUMPING 3";
-  }
-  if (processSensor(4, SENSOR4, PUMP4))
-  {
-    if (status.length() > 0)
-    {
-      status += ", ";
-    }
-    status += "PUMPING 4";
-  }
-
-  if (status.length() == 0)
-  {
-    status = "-- OFF --";
-  }
-
-  Serial.println(status);
-  ThingSpeak.setStatus(status);
-
-  ThingSpeak.setField(8, WiFi.RSSI());
-
-  ThingSpeak.writeFields(TP_CHANNEL, TP_WRITE_API_KEY);
-
-  delay(10000);
 }
