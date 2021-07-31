@@ -69,7 +69,7 @@ bool processSensor(uint8_t field, uint8_t readPin, uint8_t writePin)
 {
   float value = analogRead(readPin);
 
-  Serial.printf("%d (%d) = %f ", field, readPin, value);
+  Serial.printf("%d (%d->%d) = %d .. ", field, readPin, writePin, (int)value);
   ThingSpeak.setField(field, value);
 
   if (value < PUMP_THRESHOLD)
