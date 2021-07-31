@@ -6,6 +6,9 @@
 #include "ThingSpeak.h"
 #include "ThingSpeakSecrets.h"
 
+#include <NTPClient.h>
+#include <WiFiUdp.h>
+
 #define SENSOR1 33
 #define SENSOR2 32
 #define SENSOR3 35
@@ -21,22 +24,68 @@
 #define DEEP_SLEEP_MINUTES 5
 #define DEEP_SLEEP_DELAY_MS 1000
 
+// UTC
+#define PUMPING_HOURS_START 2
+#define PUMPING_HOURS_END 6
+
 #define PUMPING_DELAY_MS 2000
 
+#define NTP_TIMEOUT_MS 10000
 #define WIFI_TIMEOUT_MS 20000
 
 WiFiClient wifiClient;
 
-void goToDeepSleep()
+WiFiUDP wifiUdpClient;
+NTPClient timeClient(wifiUdpClient);
+
+uint16_t sensor1, sensor2, sensor3, sensor4;
+bool pump1, pump2, pump3, pump4;
+
+void goToDeepSleep(uint64_t sleepMinutes)
 {
-  Serial.print("Going to sleep.");
+  Serial.printf("Sleeping for %llu minutes.", sleepMinutes);
   delay(DEEP_SLEEP_DELAY_MS);
 
   Serial.println(" bye");
   delay(DEEP_SLEEP_DELAY_MS); // trying to let the wifi transmit data..
 
-  esp_sleep_enable_timer_wakeup(DEEP_SLEEP_MINUTES * 60 * 1000 * 1000);
+  esp_sleep_enable_timer_wakeup(sleepMinutes * 60 * 1000 * 1000);
   esp_deep_sleep_start();
+}
+
+void shutdownOutsidePumpingHours()
+{
+  timeClient.update();
+
+  // calculate how long we want to sleep to increase the chances to
+  // wake up at a time we're allowed to pump.
+
+  // 0 ..... PUMPING_HOURS_START ###### PUMPING_HOURS_END ...... 23
+  // 0 ### PUMPING_HOURS_END ........... PUMPING_HOURS_START ### 23
+
+  uint8_t hour = timeClient.getHours();
+  uint8_t minute = timeClient.getMinutes();
+
+  if (PUMPING_HOURS_START < PUMPING_HOURS_END)
+  {
+
+    // we're not in the pumping window
+    if (hour < PUMPING_HOURS_START || hour > PUMPING_HOURS_END)
+    {
+      Serial.printf("Outside pumping hours @%d:%d (allowed to pump from %d:00 to %d:59)\n", hour, minute, PUMPING_HOURS_START, PUMPING_HOURS_END);
+      goToDeepSleep(((24 + PUMPING_HOURS_START - hour) % 24) * 60 - minute);
+    }
+  }
+  else
+  {
+
+    // we're not in the pumping window
+    if (hour < PUMPING_HOURS_START && hour > PUMPING_HOURS_END)
+    {
+      Serial.printf("Outside pumping hours @%d:%d (allowed to pump until %d:00 and after %d:59)\n", hour, minute, PUMPING_HOURS_END, PUMPING_HOURS_START);
+      goToDeepSleep(((24 + PUMPING_HOURS_START - hour) % 24) * 60 - minute);
+    }
+  }
 }
 
 void connectToWifi()
@@ -56,7 +105,7 @@ void connectToWifi()
   if (WiFi.status() != WL_CONNECTED)
   {
     Serial.println(" ! failed !");
-    goToDeepSleep();
+    goToDeepSleep(DEEP_SLEEP_MINUTES);
   }
   else
   {
@@ -65,79 +114,108 @@ void connectToWifi()
   }
 }
 
-bool processSensor(uint8_t field, uint8_t readPin, uint8_t writePin)
+void ensureTime()
 {
-  float value = analogRead(readPin);
+  timeClient.begin();
 
-  Serial.printf("%d (%d->%d) = %d .. ", field, readPin, writePin, (int)value);
-  ThingSpeak.setField(field, value);
+  unsigned long startNtp = millis();
 
+  Serial.print("Fetching time");
+  while (!timeClient.update() && millis() - startNtp < NTP_TIMEOUT_MS)
+  {
+    Serial.print(".");
+    delay(250);
+  }
+
+  if (!timeClient.update())
+  {
+    Serial.println(" ! failed !");
+    goToDeepSleep(DEEP_SLEEP_MINUTES);
+  }
+  else
+  {
+    Serial.print(" got ");
+    Serial.println(timeClient.getFormattedTime());
+  }
+}
+
+uint16_t readSensor(uint8_t field, uint8_t sensorPin)
+{
+  uint16_t value = (uint16_t)analogRead(sensorPin);
+
+  Serial.printf("%d (%d) = %d .. ", field, sensorPin, value);
+
+  return value;
+}
+
+bool updatePump(uint8_t pumpPin, uint16_t value)
+{
   if (value < PUMP_THRESHOLD)
   {
-    digitalWrite(writePin, HIGH);
+    digitalWrite(pumpPin, HIGH);
     return false;
   }
   else
   {
-    digitalWrite(writePin, LOW);
+    digitalWrite(pumpPin, LOW);
     return true;
   }
 }
 
 bool measureAndPump(bool sendUpdate)
 {
-  String status = "";
-  bool result = false;
+  sensor1 = readSensor(1, SENSOR1);
+  sensor2 = readSensor(2, SENSOR2);
+  sensor3 = readSensor(3, SENSOR3);
+  sensor4 = readSensor(4, SENSOR4);
 
-  if (processSensor(1, SENSOR1, PUMP1))
-  {
-    result = true;
-    status += "PUMPING 1";
-  }
-  if (processSensor(2, SENSOR2, PUMP2))
-  {
-    if (result)
-    {
-      status += ", ";
-    }
-    result = true;
-    status += "PUMPING 2";
-  }
-  if (processSensor(3, SENSOR3, PUMP3))
-  {
-    if (result)
-    {
-      status += ", ";
-    }
-    result = true;
-    status += "PUMPING 3";
-  }
-  if (processSensor(4, SENSOR4, PUMP4))
-  {
-    if (result)
-    {
-      status += ", ";
-    }
-    result = true;
-    status += "PUMPING 4";
-  }
-
-  if (!result)
-  {
-    status = "-- OFF --";
-  }
-
-  Serial.println(status);
-  ThingSpeak.setStatus(status);
-
-  ThingSpeak.setField(8, WiFi.RSSI());
+  pump1 = updatePump(PUMP1, sensor1);
+  pump2 = updatePump(PUMP2, sensor2);
+  pump3 = updatePump(PUMP3, sensor3);
+  pump4 = updatePump(PUMP4, sensor4);
 
   if (sendUpdate)
   {
+    String status = "";
+    if (pump1)
+    {
+      status += "PUMPING 1 ";
+    }
+    if (pump2)
+    {
+      status += "PUMPING 2 ";
+    }
+    if (pump3)
+    {
+      status += "PUMPING 3 ";
+    }
+    if (pump4)
+    {
+      status += "PUMPING 4 ";
+    }
+    if (status.length() == 0)
+    {
+      status = "-- OFF -- ";
+    }
+
+    Serial.println(status);
+    ThingSpeak.setStatus(status.substring(0, status.length() - 1));
+
+    ThingSpeak.setField(1, sensor1);
+    ThingSpeak.setField(2, sensor2);
+    ThingSpeak.setField(3, sensor3);
+    ThingSpeak.setField(4, sensor4);
+    ThingSpeak.setField(8, WiFi.RSSI());
+
     Serial.println("Send update.");
     ThingSpeak.writeFields(TP_CHANNEL, TP_WRITE_API_KEY);
   }
-  return result;
+  else
+  {
+    Serial.println();
+  }
+
+  return pump1 || pump2 || pump3 || pump4;
 }
 
 void setup()
@@ -145,6 +223,8 @@ void setup()
   Serial.begin(9600);
 
   connectToWifi();
+  ensureTime();
+
   ThingSpeak.begin(wifiClient);
 
   pinMode(SENSOR1, INPUT);
@@ -162,9 +242,11 @@ void setup()
   digitalWrite(PUMP3, HIGH);
   digitalWrite(PUMP4, HIGH);
 
+  shutdownOutsidePumpingHours();
+
   if (!measureAndPump(true))
   {
-    goToDeepSleep();
+    goToDeepSleep(DEEP_SLEEP_MINUTES);
   }
 }
 
@@ -180,7 +262,12 @@ void loop()
     delay(PUMPING_DELAY_MS);
     if (!measureAndPump(true))
     {
-      goToDeepSleep();
+      goToDeepSleep(DEEP_SLEEP_MINUTES);
     }
+  }
+
+  if (count % 20 == 0)
+  {
+    shutdownOutsidePumpingHours();
   }
 }
