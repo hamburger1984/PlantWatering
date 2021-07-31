@@ -3,5 +3,5 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
-include/WifiCredentials.h
+include/*Secrets.h
 platformio-device-monitor-*.log
