@@ -41,8 +41,17 @@ NTPClient timeClient(wifiUdpClient);
 uint16_t sensor1, sensor2, sensor3, sensor4;
 bool pump1, pump2, pump3, pump4;
 
-void goToDeepSleep(uint64_t sleepMinutes)
+void goToDeepSleep(unsigned long sleepMinutes)
 {
+  String status = "SLEEPING for ";
+  status += sleepMinutes;
+  status += " minutes";
+
+  Serial.println("Send update.");
+  ThingSpeak.setStatus(status);
+  ThingSpeak.writeFields(TP_CHANNEL, TP_WRITE_API_KEY);
+  delay(DEEP_SLEEP_DELAY_MS);
+
   Serial.printf("Sleeping for %llu minutes.", sleepMinutes);
   delay(DEEP_SLEEP_DELAY_MS);
 
@@ -174,39 +183,39 @@ bool measureAndPump(bool sendUpdate)
   pump3 = updatePump(PUMP3, sensor3);
   pump4 = updatePump(PUMP4, sensor4);
 
+  String status = "";
+  if (pump1)
+  {
+    status += "PUMPING 1 ";
+  }
+  if (pump2)
+  {
+    status += "PUMPING 2 ";
+  }
+  if (pump3)
+  {
+    status += "PUMPING 3 ";
+  }
+  if (pump4)
+  {
+    status += "PUMPING 4 ";
+  }
+  if (status.length() == 0)
+  {
+    status = "-- OFF -- ";
+  }
+
+  Serial.println(status);
+  ThingSpeak.setStatus(status.substring(0, status.length() - 1));
+
+  ThingSpeak.setField(1, sensor1);
+  ThingSpeak.setField(2, sensor2);
+  ThingSpeak.setField(3, sensor3);
+  ThingSpeak.setField(4, sensor4);
+  ThingSpeak.setField(8, WiFi.RSSI());
+
   if (sendUpdate)
   {
-    String status = "";
-    if (pump1)
-    {
-      status += "PUMPING 1 ";
-    }
-    if (pump2)
-    {
-      status += "PUMPING 2 ";
-    }
-    if (pump3)
-    {
-      status += "PUMPING 3 ";
-    }
-    if (pump4)
-    {
-      status += "PUMPING 4 ";
-    }
-    if (status.length() == 0)
-    {
-      status = "-- OFF -- ";
-    }
-
-    Serial.println(status);
-    ThingSpeak.setStatus(status.substring(0, status.length() - 1));
-
-    ThingSpeak.setField(1, sensor1);
-    ThingSpeak.setField(2, sensor2);
-    ThingSpeak.setField(3, sensor3);
-    ThingSpeak.setField(4, sensor4);
-    ThingSpeak.setField(8, WiFi.RSSI());
-
     Serial.println("Send update.");
     ThingSpeak.writeFields(TP_CHANNEL, TP_WRITE_API_KEY);
   }
@@ -260,7 +269,7 @@ void loop()
   {
     Serial.println("Pumping done? re-check.");
     delay(PUMPING_DELAY_MS);
-    if (!measureAndPump(true))
+    if (!measureAndPump(false))
     {
       goToDeepSleep(DEEP_SLEEP_MINUTES);
     }
