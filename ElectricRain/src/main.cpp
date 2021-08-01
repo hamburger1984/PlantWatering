@@ -21,14 +21,20 @@
 #define PUMP3 21
 #define PUMP4 19
 
-#define DEEP_SLEEP_MINUTES 5
+#define PUMP_ON LOW
+#define PUMP_OFF HIGH
+
+#define DEEP_SLEEP_MINUTES_MIN 5
+#define DEEP_SLEEP_MINUTES_MAX 30
+
 #define DEEP_SLEEP_DELAY_MS 1000
 
 // UTC
-#define PUMPING_HOURS_START 2
-#define PUMPING_HOURS_END 6
+#define PUMPING_HOURS_START 1
+#define PUMPING_HOURS_END 5
 
 #define PUMPING_DELAY_MS 2000
+#define PUMPING_MAX_LOOP 90
 
 #define NTP_TIMEOUT_MS 10000
 #define WIFI_TIMEOUT_MS 20000
@@ -41,24 +47,94 @@ NTPClient timeClient(wifiUdpClient);
 uint16_t sensor1, sensor2, sensor3, sensor4;
 bool pump1, pump2, pump3, pump4;
 
-void goToDeepSleep(uint64_t sleepMinutes)
+void sendThingsPeakUpdate(String status)
 {
+  uint8_t attempts = 0;
+  while (true)
+  {
+    if (attempts == 3)
+    {
+      break;
+    }
+    else if (attempts > 0)
+    {
+      Serial.printf("%d - resend update", attempts + 1);
+    }
+    else
+    {
+      Serial.print("Send update");
+    }
+    ThingSpeak.setField(1, sensor1);
+    ThingSpeak.setField(2, sensor2);
+    ThingSpeak.setField(3, sensor3);
+    ThingSpeak.setField(4, sensor4);
+    ThingSpeak.setField(8, WiFi.RSSI());
+    ThingSpeak.setStatus(status);
+    int result = ThingSpeak.writeFields(TP_CHANNEL, TP_WRITE_API_KEY);
+    Serial.printf(" .. finished with %d\n", result);
+
+    attempts++;
+
+    switch (result)
+    {
+    case 200: /* Success */
+      return;
+    case -301: /* Failed to connect to ThingSpeak */
+    case -302: /* Unexpected failure during write to ThingSpeak */
+    case -303: /* Unable to parse response */
+    case -304: /* Timeout waiting for server to respond */
+      delay(DEEP_SLEEP_DELAY_MS);
+      continue;
+    default: /* Something else went wrong - ignore */
+      return;
+    }
+  }
+}
+
+void shutdownPumps()
+{
+  digitalWrite(PUMP1, PUMP_OFF);
+  digitalWrite(PUMP2, PUMP_OFF);
+  digitalWrite(PUMP3, PUMP_OFF);
+  digitalWrite(PUMP4, PUMP_OFF);
+}
+
+void goToDeepSleep(int sleepMinutes)
+{
+  shutdownPumps();
+
+  int actual = sleepMinutes;
+  if (sleepMinutes > DEEP_SLEEP_MINUTES_MAX)
+  {
+    actual = DEEP_SLEEP_MINUTES_MAX;
+  }
+  if (sleepMinutes < DEEP_SLEEP_MINUTES_MIN)
+  {
+    actual = DEEP_SLEEP_MINUTES_MIN;
+  }
+
   String status = "SLEEPING for ";
-  status += (uint) sleepMinutes;
+  status += actual;
   status += " minutes";
+  if (sleepMinutes > actual)
+  {
+    status += " (";
+    status += sleepMinutes;
+    status += " minutes until pump window)";
+  }
 
-  Serial.println("Send update.");
-  ThingSpeak.setStatus(status);
-  ThingSpeak.writeFields(TP_CHANNEL, TP_WRITE_API_KEY);
-  delay(DEEP_SLEEP_DELAY_MS);
+  if (WiFi.isConnected())
+  {
+    sendThingsPeakUpdate(status);
+  }
 
-  Serial.printf("Sleeping for %llu minutes.", sleepMinutes);
+  Serial.print(status);
   delay(DEEP_SLEEP_DELAY_MS);
 
   Serial.println(" bye");
   delay(DEEP_SLEEP_DELAY_MS); // trying to let the wifi transmit data..
 
-  esp_sleep_enable_timer_wakeup(sleepMinutes * 60 * 1000 * 1000);
+  esp_sleep_enable_timer_wakeup(((uint64_t)sleepMinutes) * 60 * 1000 * 1000);
   esp_deep_sleep_start();
 }
 
@@ -77,7 +153,6 @@ void shutdownOutsidePumpingHours()
 
   if (PUMPING_HOURS_START < PUMPING_HOURS_END)
   {
-
     // we're not in the pumping window
     if (hour < PUMPING_HOURS_START || hour > PUMPING_HOURS_END)
     {
@@ -87,7 +162,6 @@ void shutdownOutsidePumpingHours()
   }
   else
   {
-
     // we're not in the pumping window
     if (hour < PUMPING_HOURS_START && hour > PUMPING_HOURS_END)
     {
@@ -114,7 +188,7 @@ void connectToWifi()
   if (WiFi.status() != WL_CONNECTED)
   {
     Serial.println(" ! failed !");
-    goToDeepSleep(DEEP_SLEEP_MINUTES);
+    goToDeepSleep(DEEP_SLEEP_MINUTES_MIN);
   }
   else
   {
@@ -139,7 +213,7 @@ void ensureTime()
   if (!timeClient.update())
   {
     Serial.println(" ! failed !");
-    goToDeepSleep(DEEP_SLEEP_MINUTES);
+    goToDeepSleep(DEEP_SLEEP_MINUTES_MIN);
   }
   else
   {
@@ -161,23 +235,26 @@ bool updatePump(uint8_t pumpPin, uint16_t value)
 {
   if (value < PUMP_THRESHOLD)
   {
-    digitalWrite(pumpPin, HIGH);
+    digitalWrite(pumpPin, PUMP_OFF);
     return false;
   }
   else
   {
-    digitalWrite(pumpPin, LOW);
+    digitalWrite(pumpPin, PUMP_ON);
     return true;
   }
 }
 
-bool measureAndPump(bool sendUpdate)
+void measure()
 {
   sensor1 = readSensor(1, SENSOR1);
   sensor2 = readSensor(2, SENSOR2);
   sensor3 = readSensor(3, SENSOR3);
   sensor4 = readSensor(4, SENSOR4);
+}
 
+bool updatePumps(bool sendUpdate)
+{
   pump1 = updatePump(PUMP1, sensor1);
   pump2 = updatePump(PUMP2, sensor2);
   pump3 = updatePump(PUMP3, sensor3);
@@ -206,25 +283,19 @@ bool measureAndPump(bool sendUpdate)
   }
 
   Serial.println(status);
-  ThingSpeak.setStatus(status.substring(0, status.length() - 1));
-
-  ThingSpeak.setField(1, sensor1);
-  ThingSpeak.setField(2, sensor2);
-  ThingSpeak.setField(3, sensor3);
-  ThingSpeak.setField(4, sensor4);
-  ThingSpeak.setField(8, WiFi.RSSI());
 
   if (sendUpdate)
   {
-    Serial.println("Send update.");
-    ThingSpeak.writeFields(TP_CHANNEL, TP_WRITE_API_KEY);
-  }
-  else
-  {
-    Serial.println();
+    sendThingsPeakUpdate(status.substring(0, status.length() - 1));
   }
 
   return pump1 || pump2 || pump3 || pump4;
+}
+
+bool measureAndUpdatePumps(bool sendUpdate)
+{
+  measure();
+  return updatePumps(sendUpdate);
 }
 
 void setup()
@@ -240,22 +311,23 @@ void setup()
   pinMode(SENSOR2, INPUT);
   pinMode(SENSOR3, INPUT);
   pinMode(SENSOR4, INPUT);
+  measure();
 
   pinMode(PUMP1, OUTPUT);
   pinMode(PUMP2, OUTPUT);
   pinMode(PUMP3, OUTPUT);
   pinMode(PUMP4, OUTPUT);
 
-  digitalWrite(PUMP1, HIGH);
-  digitalWrite(PUMP2, HIGH);
-  digitalWrite(PUMP3, HIGH);
-  digitalWrite(PUMP4, HIGH);
+  digitalWrite(PUMP1, PUMP_OFF);
+  digitalWrite(PUMP2, PUMP_OFF);
+  digitalWrite(PUMP3, PUMP_OFF);
+  digitalWrite(PUMP4, PUMP_OFF);
 
   shutdownOutsidePumpingHours();
 
-  if (!measureAndPump(true))
+  if (!measureAndUpdatePumps(true))
   {
-    goToDeepSleep(DEEP_SLEEP_MINUTES);
+    goToDeepSleep(DEEP_SLEEP_MINUTES_MIN);
   }
 }
 
@@ -265,14 +337,21 @@ void loop()
   delay(PUMPING_DELAY_MS);
 
   count++;
-  if (!measureAndPump(count % 10 == 0))
+  if (!measureAndUpdatePumps(count % 10 == 0))
   {
     Serial.println("Pumping done? re-check.");
     delay(PUMPING_DELAY_MS);
-    if (!measureAndPump(false))
+    if (!measureAndUpdatePumps(false))
     {
-      goToDeepSleep(DEEP_SLEEP_MINUTES);
+      goToDeepSleep(DEEP_SLEEP_MINUTES_MIN);
     }
+  }
+
+  if (count >= PUMPING_MAX_LOOP)
+  {
+    sendThingsPeakUpdate("Max pumping reached - wait");
+    // we've been pumping for some time - let's wait for the water to arrive
+    goToDeepSleep(DEEP_SLEEP_MINUTES_MIN);
   }
 
   if (count % 20 == 0)
