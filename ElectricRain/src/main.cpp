@@ -27,14 +27,14 @@
 #define DEEP_SLEEP_MINUTES_MIN 5
 #define DEEP_SLEEP_MINUTES_MAX 30
 
-#define DEEP_SLEEP_DELAY_MS 1000
-
 // UTC
 #define PUMPING_HOURS_START 1
 #define PUMPING_HOURS_END 5
 
 #define PUMPING_DELAY_MS 2000
 #define PUMPING_MAX_LOOP 90
+
+#define THINGSPEAK_RETRY_DELAY_MS 1000
 
 #define NTP_TIMEOUT_MS 10000
 #define WIFI_TIMEOUT_MS 20000
@@ -83,7 +83,7 @@ void sendThingsPeakUpdate(String status)
     case -302: /* Unexpected failure during write to ThingSpeak */
     case -303: /* Unable to parse response */
     case -304: /* Timeout waiting for server to respond */
-      delay(DEEP_SLEEP_DELAY_MS);
+      delay(THINGSPEAK_RETRY_DELAY_MS);
       continue;
     default: /* Something else went wrong - ignore */
       return;
@@ -99,11 +99,11 @@ void shutdownPumps()
   digitalWrite(PUMP4, PUMP_OFF);
 }
 
-void goToDeepSleep(int sleepMinutes)
+void goToDeepSleep(uint sleepMinutes)
 {
   shutdownPumps();
 
-  int actual = sleepMinutes;
+  uint actual = sleepMinutes;
   if (sleepMinutes > DEEP_SLEEP_MINUTES_MAX)
   {
     actual = DEEP_SLEEP_MINUTES_MAX;
@@ -123,19 +123,26 @@ void goToDeepSleep(int sleepMinutes)
     status += " minutes until pump window)";
   }
 
+  Serial.println(status);
+
   if (WiFi.isConnected())
   {
     sendThingsPeakUpdate(status);
   }
 
-  Serial.print(status);
-  delay(DEEP_SLEEP_DELAY_MS);
+  Serial.println(" bye.");
 
-  Serial.println(" bye");
-  delay(DEEP_SLEEP_DELAY_MS); // trying to let the wifi transmit data..
-
-  esp_sleep_enable_timer_wakeup(((uint64_t)sleepMinutes) * 60 * 1000 * 1000);
-  esp_deep_sleep_start();
+  uint64_t us = (uint64_t)actual * 60 * 1000 * 1000;
+  esp_err_t err = esp_sleep_enable_timer_wakeup(us);
+  if (err)
+  {
+    Serial.printf("enable wakeup timer failed with %d\n", err);
+    delay(5000);
+  }
+  else
+  {
+    esp_deep_sleep_start();
+  }
 }
 
 void shutdownOutsidePumpingHours()
